@@ -5,7 +5,7 @@ use std::{collections::HashMap, env::args, future::Future, ops::Not};
 use futures::StreamExt;
 use ksni::TrayMethods;
 use notify_rust::Notification;
-use tokio::{select, sync::mpsc, try_join};
+use tokio::{select, signal::ctrl_c, sync::mpsc, try_join};
 use zbus::zvariant::OwnedObjectPath;
 use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 use zbus_systemd::systemd1::{ManagerProxy, UnitProxy};
@@ -118,6 +118,28 @@ async fn main() -> ExResult<()> {
     loop {
         select! {
             biased;
+            e = ctrl_c() => {
+                e?;
+                handle.shutdown().await;
+
+                if automount_state == State::Dead {
+                    let result = authority
+                    .check_authorization(
+                        &subject,
+                        "org.freedesktop.systemd1.manage-units",
+                        &HashMap::default(),
+                        CheckAuthorizationFlags::AllowUserInteraction.into(),
+                        "",
+                    )
+                    .await?;
+    
+                    if result.is_authorized {
+                        automount.start("replace".into()).await?;
+                    }    
+                }
+
+                return Ok(());
+            }
             s = mount_state_change.next()  => {
                 let new = State::from_substates(&s.unwrap().get().await.unwrap());
 
