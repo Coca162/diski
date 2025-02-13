@@ -31,7 +31,11 @@ impl ksni::Tray for DiskTray {
         env!("CARGO_PKG_NAME").into()
     }
     fn icon_name(&self) -> String {
-        "drive-harddisk".into()
+        if self.automount == State::Dead && self.mount == State::Dead  {
+            "media-eject".into()
+        } else {
+            "media-floppy".into()
+        }
     }
     fn title(&self) -> String {
         format!("{} Status", self.display_name)
