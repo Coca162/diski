@@ -285,7 +285,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "disk_status"
+name = "diski"
 version = "0.1.0"
 dependencies = [
  "futures",
