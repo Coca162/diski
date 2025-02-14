@@ -13,8 +13,8 @@ use zbus_systemd::systemd1::{ManagerProxy, UnitProxy};
 #[derive(Debug)]
 struct DiskTray {
     display_name: String,
-    mount: State,
-    automount: State,
+    mount: MountState,
+    automount: AutomountState,
     requester: mpsc::UnboundedSender<ClientRequests>,
 }
 
@@ -31,11 +31,13 @@ impl ksni::Tray for DiskTray {
         env!("CARGO_PKG_NAME").into()
     }
     fn icon_name(&self) -> String {
-        if self.automount == State::Dead && self.mount == State::Dead  {
-            "media-eject".into()
-        } else {
-            "media-floppy".into()
+        match (self.mount, self.automount) {
+            (MountState::Dead, AutomountState::Dead) => "media-eject",
+            (MountState::Dead, AutomountState::Running) => "media-optical-recordable-symbolic",
+            (MountState::Mounted, _) => "media-optical-data",
+            _ => "media-optical",
         }
+        .into()
     }
     fn title(&self) -> String {
         format!("{} Status", self.display_name)
@@ -100,8 +102,8 @@ async fn main() -> ExResult<()> {
     let mount = UnitProxy::new(&conn, mount).await?;
     let automount = UnitProxy::new(&conn, automount).await?;
 
-    let mut mount_state = State::from_substates(&mount.sub_state().await?);
-    let mut automount_state = State::from_substates(&automount.sub_state().await?);
+    let mut mount_state = MountState::from_substates(&mount.sub_state().await?);
+    let mut automount_state = AutomountState::from_substates(&automount.sub_state().await?);
 
     let (sender, mut events) = mpsc::unbounded_channel();
 
@@ -126,7 +128,7 @@ async fn main() -> ExResult<()> {
                 e?;
                 handle.shutdown().await;
 
-                if automount_state == State::Dead {
+                if automount_state == AutomountState::Dead {
                     let result = authority
                     .check_authorization(
                         &subject,
@@ -136,16 +138,16 @@ async fn main() -> ExResult<()> {
                         "",
                     )
                     .await?;
-    
+
                     if result.is_authorized {
                         automount.start("replace".into()).await?;
-                    }    
+                    }
                 }
 
                 return Ok(());
             }
             s = mount_state_change.next()  => {
-                let new = State::from_substates(&s.unwrap().get().await.unwrap());
+                let new = MountState::from_substates(&s.unwrap().get().await.unwrap());
 
                 if new != mount_state {
                     mount_state = new;
@@ -153,7 +155,7 @@ async fn main() -> ExResult<()> {
                 }
             }
             s = automount_state_change.next() => {
-                let new = State::from_substates(&s.unwrap().get().await.unwrap());
+                let new = AutomountState::from_substates(&s.unwrap().get().await.unwrap());
 
                 if new != automount_state {
                     automount_state = new;
@@ -220,22 +222,38 @@ async fn job_wait(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
+enum MountState {
     Mounted,
     Mounting,
     Unmounting,
+    Dead,
+    Failed,
+}
+
+impl MountState {
+    fn from_substates(input: &str) -> Self {
+        match input {
+            "mounted" | "mounting-done" => Self::Mounted,
+            "mounting" => Self::Mounting,
+            "unmounting" => Self::Unmounting,
+            "dead" => Self::Dead,
+            "failed" => Self::Failed,
+            input => panic!("Unexpected active state: {input}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutomountState {
     Dead,
     Waiting,
     Running,
     Failed,
 }
 
-impl State {
+impl AutomountState {
     fn from_substates(input: &str) -> Self {
         match input {
-            "mounted" | "mounting-done" => Self::Mounted,
-            "mounting" => Self::Mounting,
-            "unmounting" => Self::Unmounting,
             "dead" => Self::Dead,
             "waiting" => Self::Waiting,
             "running" => Self::Running,
